@@ -3,11 +3,16 @@
 These exercise harness decisions, not Hybrid compiler correctness.
 Run: python3 -m unittest discover -s tools -p test_differential_loop.py -v
 """
+import contextlib
+import importlib.util
+import io
+import os
 import pathlib
 import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 
 HARNESS = pathlib.Path(__file__).with_name("differential_loop.py")
@@ -71,6 +76,65 @@ class RuntimeHazardTests(unittest.TestCase):
 
     def test_successful_program_is_allowed(self):
         self.assert_result(self.run_case(exit_code=0), 0)
+
+
+class CorpusPathTests(unittest.TestCase):
+    def run_case(self, relative_corpus, relative_bin=False):
+        spec = importlib.util.spec_from_file_location("differential", HARNESS)
+        harness = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(harness)
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary).resolve()
+            corpus = root / "corpus with spaces"
+            corpus.mkdir()
+            source = corpus / "01-case.hy"
+            source.write_text(
+                "// EXPECTED-VERDICT: ACCEPT\nfn main() {}\n", encoding="utf-8")
+            builder = root / "hyb"
+            builder.touch()
+            workspaces = []
+
+            def fake_run(cmd, **kwargs):
+                cwd = pathlib.Path(kwargs["cwd"])
+                self.assertNotEqual(cwd, root)
+                if cmd[1:2] == ["build"]:
+                    self.assertEqual(pathlib.Path(cmd[0]), builder)
+                    # Model the builder opening its input from the subprocess
+                    # cwd, rather than assuming arguments are already absolute.
+                    if not (cwd / cmd[2]).is_file():
+                        return subprocess.CompletedProcess(
+                            cmd, 1, "", f"source not found: {cmd[2]}")
+                    (cwd / "a.out").touch()
+                    workspaces.append(cwd)
+                else:
+                    self.assertEqual(cmd, [str(workspaces[-1] / "a.out")])
+                return subprocess.CompletedProcess(cmd, 0, "", "")
+
+            args = [str(HARNESS), "--bin",
+                    builder.name if relative_bin else str(builder),
+                    "--corpus", corpus.name if relative_corpus else str(corpus)]
+            previous_cwd = os.getcwd()
+            output = io.StringIO()
+            try:
+                os.chdir(root)
+                with patch.object(sys, "argv", args), \
+                     patch.object(harness.subprocess, "run", side_effect=fake_run) as run, \
+                     contextlib.redirect_stdout(output):
+                    status = harness.main()
+            finally:
+                os.chdir(previous_cwd)
+            self.assertEqual(status, 0, output.getvalue())
+            self.assertIn("differential: FULL AGREEMENT", output.getvalue())
+            self.assertEqual(run.call_count, 2)
+
+    def test_relative_corpus_builds_and_runs(self):
+        self.run_case(relative_corpus=True)
+
+    def test_absolute_corpus_still_builds_and_runs(self):
+        self.run_case(relative_corpus=False)
+
+    def test_relative_builder_and_corpus_build_and_run(self):
+        self.run_case(relative_corpus=True, relative_bin=True)
 
 
 if __name__ == "__main__":

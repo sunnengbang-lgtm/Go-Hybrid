@@ -131,16 +131,16 @@ def main():
     ap.add_argument("--corpus", default=DEFAULT_CORPUS)
     ap.add_argument("--bin", default=DEFAULT_BIN)
     args = ap.parse_args()
-    # The build leg runs with cwd = a temp workspace — a relative --bin
-    # would resolve THERE (the CI failure this guard fixed). Absolutize
-    # once, up front.
+    # Builds run in a temporary workspace. Resolve user-supplied paths
+    # against the caller's cwd before invoking the builder.
     bin_path = os.path.abspath(args.bin)
+    corpus_path = os.path.abspath(args.corpus)
     if not os.path.isfile(bin_path):
         raise SystemExit(f"differential: hyb binary not found at {bin_path}")
 
     files = sorted(
-        os.path.join(args.corpus, f)
-        for f in os.listdir(args.corpus)
+        os.path.join(corpus_path, f)
+        for f in os.listdir(corpus_path)
         if f.endswith(".hy")
     )
     if not files:
